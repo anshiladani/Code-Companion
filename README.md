@@ -1,5 +1,7 @@
 # Code Companion
 
+Project author: Anshi (24CS044).
+
 [![Tests](https://github.com/anshiladani/Code-Companion/actions/workflows/tests.yml/badge.svg)](https://github.com/anshiladani/Code-Companion/actions/workflows/tests.yml)
 
 Code Companion is an early-stage Python learning demo with username-based practice profiles, adaptive problem recommendations, optional AI hints, and a responsive coding workspace.
