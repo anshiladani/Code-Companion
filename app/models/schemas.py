@@ -11,8 +11,19 @@ class StudentProfile(Base):
     __tablename__ = "student_profiles"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String(30), unique=True, index=True, nullable=False)
+    display_name = Column(String(80), nullable=True)
+    password_hash = Column(String(256), nullable=True)
     skill_rating = Column(Float, default=100.0, nullable=False)
     created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    student_id = Column(Integer, ForeignKey("student_profiles.id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), default=utc_now, nullable=False)
+
 
 class LoginHistory(Base):
     __tablename__ = "login_history"

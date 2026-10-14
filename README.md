@@ -9,7 +9,7 @@ Code Companion is an early-stage Python learning demo with username-based practi
 ## What works
 
 - FastAPI API with interactive docs at `/docs` and a database-aware health check at `/health`.
-- Demo profile creation/reuse and login event storage.
+- Password-protected profile registration and sign-in, with hashed passwords, private profile editing, login history, sign-out, and profile deletion.
 - Six starter problems, seeded idempotently when the application starts.
 - Recommendation by the closest problem difficulty to a learner's current rating.
 - AI tutoring hints when `LLM_API_KEY` is configured.
@@ -31,6 +31,12 @@ python -m uvicorn app.main:app --reload
 ```
 
 Open `http://127.0.0.1:8000`. AI hints remain unavailable until an `LLM_API_KEY` is provided.
+
+## Profile management
+
+Create an account in the browser with a username, display name, and password of at least eight characters. Sign in with the same credentials to view or update your display name, see your own recent login history, sign out, or permanently delete your profile. Profile endpoints require the session's bearer token; recommendations are limited to the signed-in profile.
+
+The database startup creates the authentication table and adds profile columns to existing databases without deleting existing profile records. Legacy username-only profiles are kept, but cannot be claimed or signed into because they have no password; register with a different username.
 
 ### Code execution warning
 
@@ -62,7 +68,7 @@ The root-level `render.yaml` Blueprint creates the Docker web service and a priv
 
 **Free-tier limitations:** Render's free web service spins down after 15 minutes without traffic, so the first visit after idle can be slow. A free PostgreSQL database expires 30 days after creation; after the additional 14-day upgrade grace period, Render deletes it and its data. Free databases do not include backups. This setup is for a temporary demo only—not a durable public launch. Upgrade the database before expiry and arrange backups before storing anything you need to keep. Render can also suspend free services when workspace usage limits are reached.
 
-The project uses username-only demo profiles. Do not enter personal information or treat this as a secure account system.
+Profiles use password-based sign-in and are intended for a learning demo, not a production identity system. Existing username-only profiles are preserved but cannot be claimed without credentials; register with a different username. Do not enter sensitive personal information.
 
 ## Configuration
 
@@ -78,7 +84,7 @@ The project uses username-only demo profiles. Do not enter personal information 
 
 This project is a learning demo, **not an industry-certified or production-ready service**:
 
-- Demo profiles are usernames only, not authenticated accounts. Anyone can reuse another person's username. Add secure authentication, authorization, abuse/rate limiting, and account privacy before storing real learner data.
+- Add abuse/rate limiting, password reset, stronger session lifecycle controls, and account privacy safeguards before storing real learner data.
 - Recommendations currently use the profile's static skill rating; assessed submissions and performance-based rating updates are not implemented yet.
 - The practice problems are starter examples and do not yet have a judge, test cases, or submission history.
 - Replace the local runner with an isolated code-execution service before accepting submissions from other people.

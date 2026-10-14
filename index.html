@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Code Companion - Login & Playground</title>
+    <title>Code Companion - Learning Workspace</title>
     <style>
         body { font-family: 'Segoe UI', Arial, sans-serif; background-color: #0f172a; margin: 0; padding: 0; color: #f8fafc; display: flex; justify-content: center; align-content: center; min-height: 100vh; }
         .wrapper { width: 100%; max-width: 1000px; padding: 20px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: center; }
@@ -15,7 +15,10 @@
         .input-group { text-align: left; margin-bottom: 20px; }
         .input-group label { display: block; margin-bottom: 8px; color: #cbd5e1; font-weight: 500; }
         input[type="text"] { width: 100%; padding: 12px; background: #0f172a; border: 2px solid #334155; border-radius: 8px; color: white; font-size: 16px; box-sizing: border-box; transition: 0.2s; }
+        input[type="password"] { width: 100%; padding: 12px; background: #0f172a; border: 2px solid #334155; border-radius: 8px; color: white; font-size: 16px; box-sizing: border-box; }
         input[type="text"]:focus { border-color: #38bdf8; outline: none; }
+        .secondary-button { margin-top: 12px; background: transparent; border: 1px solid #475569; }
+        .message { min-height: 20px; color: #fca5a5; }
         
         /* મેઇન કોડિંગ પ્લેટફોર્મ (લોગિન પછી દેખાશે) */
         .main-platform { display: none; background: #1e293b; padding: 30px; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 1px solid #334155; }
@@ -33,6 +36,7 @@
         pre { margin: 0; font-family: monospace; font-size: 15px; color: #e2e8f0; white-space: pre-wrap; }
         
         .sidebar-card { background: #0f172a; padding: 15px; border-radius: 8px; border: 1px solid #334155; }
+        .sidebar-card + .sidebar-card { margin-top: 16px; }
         .sidebar-card h3 { margin-top: 0; color: #38bdf8; border-bottom: 1px solid #334155; padding-bottom: 8px; }
         ul { padding-left: 0; list-style: none; margin: 0; }
         li { padding: 8px 0; border-bottom: 1px solid #1e293b; font-size: 14px; color: #cbd5e1; }
@@ -46,18 +50,30 @@
     <div id="loginSection" class="login-card">
         <h2>🚀 Code Companion</h2>
         <p>AI-Powered Personalized Coding Learning Platform</p>
+        <form id="authForm">
+        <div class="input-group" id="displayNameGroup" hidden>
+            <label for="displayNameInput">Display name</label>
+            <input type="text" id="displayNameInput" maxlength="80" autocomplete="name">
+        </div>
         <div class="input-group">
             <label for="usernameInput">Student Username</label>
-            <input type="text" id="usernameInput" placeholder="Enter your name (e.g., Anshi)" required>
+            <input type="text" id="usernameInput" placeholder="3-30 letters, numbers, _ or -" maxlength="30" autocomplete="username" required>
         </div>
-        <button onclick="loginUser()">Sign In / Register</button>
+        <div class="input-group">
+            <label for="passwordInput">Password</label>
+            <input type="password" id="passwordInput" minlength="8" maxlength="128" autocomplete="current-password" required>
+        </div>
+        <button id="authSubmit" type="submit">Sign in</button>
+        <button id="authModeToggle" class="secondary-button" type="button">Create an account</button>
+        <p id="authMessage" class="message" role="alert"></p>
+        </form>
     </div>
 
     <!-- ૨. મુખ્ય કોડિંગ સ્ક્રીન (લોગિન સક્સેસ થયા પછી ઓપન થશે) -->
     <div id="platformSection" class="main-platform">
         <div class="header-bar">
             <h1>Workspace Playground</h1>
-            <div id="userTag" class="user-tag">👤 User: Guest</div>
+            <div><span id="userTag" class="user-tag">👤 User</span> <button id="logoutButton" type="button" style="width:auto; margin-left:8px;">Sign out</button></div>
         </div>
         
         <div class="workspace">
@@ -76,7 +92,18 @@
             <!-- જમણી બાજુએ લાઈવ લોગિન ડેટાબેઝ હિસ્ટ્રી -->
             <div>
                 <div class="sidebar-card">
-                    <h3>🕒 Recent Live Logins</h3>
+                    <h3>👤 Manage profile</h3>
+                    <p id="profileUsername" style="color:#94a3b8;"></p>
+                    <div class="input-group">
+                        <label for="profileNameInput">Display name</label>
+                        <input type="text" id="profileNameInput" maxlength="80" autocomplete="name">
+                    </div>
+                    <button id="saveProfileButton" type="button">Save profile</button>
+                    <button id="deleteProfileButton" class="secondary-button" type="button" style="color:#fca5a5;">Delete my profile</button>
+                    <p id="profileMessage" role="status"></p>
+                </div>
+                <div class="sidebar-card">
+                    <h3>🕒 My recent logins</h3>
                     <ul id="recentLoginsList">
                         <li style="color:#64748b;">Loading active history...</li>
                     </ul>
@@ -87,50 +114,119 @@
 </div>
 
 <script>
-    const API_BASE = window.location.origin; // ઓટોમેટીક કરંટ યુઆરએલ પકડશે
+    const API_BASE = window.location.origin;
+    const tokenKey = "code-companion-token";
+    let isRegistering = false;
+    let currentProfile = null;
 
-    // લોગિન ફંક્શન જે ડેટાબેઝમાં એન્ટ્રી સ્ટોર કરશે
-    async function loginUser() {
-        const username = document.getElementById('usernameInput').value.trim();
-        if(!username) return alert("Please enter a valid student username!");
+    async function apiRequest(path, options = {}) {
+        const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+        const token = sessionStorage.getItem(tokenKey);
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+        if (response.status === 204) return null;
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.detail || "Request failed. Please try again.");
+        return data;
+    }
 
+    function showProfile(profile) {
+        currentProfile = profile;
+        document.getElementById("loginSection").style.display = "none";
+        document.getElementById("platformSection").style.display = "block";
+        document.getElementById("userTag").textContent = `👤 ${profile.display_name}`;
+        document.getElementById("profileUsername").textContent = `@${profile.username}`;
+        document.getElementById("profileNameInput").value = profile.display_name;
+        fetchRecentLogins();
+    }
+
+    document.getElementById("authForm").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const message = document.getElementById("authMessage");
+        message.textContent = "";
+        const payload = {
+            username: document.getElementById("usernameInput").value,
+            password: document.getElementById("passwordInput").value
+        };
+        if (isRegistering) payload.display_name = document.getElementById("displayNameInput").value.trim();
         try {
-            const response = await fetch(`${API_BASE}/auth/login`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username: username })
+            const result = await apiRequest(isRegistering ? "/auth/register" : "/auth/login", {
+                method: "POST", body: JSON.stringify(payload)
             });
-            const data = await response.json();
-            
-            // લોગિન સક્સેસ થાય એટલે સ્ક્રીન બદલો
-            document.getElementById('loginSection').style.display = 'none';
-            document.getElementById('platformSection').style.display = 'block';
-            document.getElementById('userTag').innerText = `👤 User: ${username}`;
-            
-            // ડેટાબેઝમાંથી લેટેસ્ટ હિસ્ટ્રી લોડ કરો
-            fetchRecentLogins();
+            sessionStorage.setItem(tokenKey, result.access_token);
+            showProfile(result.profile);
         } catch (error) {
-            alert("Database Connection Error! Make sure server is running.");
+            message.textContent = error.message;
+        }
+    });
+
+    document.getElementById("authModeToggle").addEventListener("click", () => {
+        isRegistering = !isRegistering;
+        document.getElementById("displayNameGroup").hidden = !isRegistering;
+        document.getElementById("displayNameInput").required = isRegistering;
+        document.getElementById("passwordInput").autocomplete = isRegistering ? "new-password" : "current-password";
+        document.getElementById("authSubmit").textContent = isRegistering ? "Create account" : "Sign in";
+        document.getElementById("authModeToggle").textContent = isRegistering ? "I already have an account" : "Create an account";
+        document.getElementById("authMessage").textContent = "";
+    });
+
+    document.getElementById("saveProfileButton").addEventListener("click", async () => {
+        const message = document.getElementById("profileMessage");
+        try {
+            const profile = await apiRequest("/auth/me", {
+                method: "PATCH",
+                body: JSON.stringify({ display_name: document.getElementById("profileNameInput").value.trim() })
+            });
+            showProfile(profile);
+            message.textContent = "Profile saved.";
+        } catch (error) {
+            message.textContent = error.message;
+        }
+    });
+
+    document.getElementById("logoutButton").addEventListener("click", async () => {
+        try { await apiRequest("/auth/logout", { method: "POST" }); } catch (error) { console.error(error); }
+        sessionStorage.removeItem(tokenKey);
+        currentProfile = null;
+        document.getElementById("platformSection").style.display = "none";
+        document.getElementById("loginSection").style.display = "block";
+    });
+
+    document.getElementById("deleteProfileButton").addEventListener("click", async () => {
+        if (!window.confirm("Permanently delete your profile and its login history? This cannot be undone.")) return;
+        try {
+            await apiRequest("/auth/me", { method: "DELETE" });
+            sessionStorage.removeItem(tokenKey);
+            window.location.reload();
+        } catch (error) {
+            document.getElementById("profileMessage").textContent = error.message;
+        }
+    });
+
+    async function fetchRecentLogins() {
+        const list = document.getElementById("recentLoginsList");
+        try {
+            const data = await apiRequest("/auth/me/login-history");
+            list.replaceChildren();
+            if (data.length === 0) {
+                list.textContent = "No login history yet.";
+                return;
+            }
+            data.forEach((log) => {
+                const item = document.createElement("li");
+                item.textContent = new Date(log.login_time).toLocaleString();
+                list.appendChild(item);
+            });
+        } catch (error) {
+            list.textContent = error.message;
         }
     }
 
-    // ડેટાબેઝમાંથી રીસન્ટ લોગિન થયેલા લોકોની લિસ્ટ લાવશે
-    async function fetchRecentLogins() {
-        const list = document.getElementById('recentLoginsList');
-        try {
-            const response = await fetch(`${API_BASE}/auth/recent-logins`);
-            const data = await response.json();
-            list.innerHTML = "";
-            if(data.length === 0) {
-                list.innerHTML = "<li>No active sessions yet</li>";
-                return;
-            }
-            data.forEach(log => {
-                list.innerHTML += `<li><strong>${log.username}</strong><br><span style='color:#64748b; font-size:12px;'>${log.login_time}</span></li>`;
-            });
-        } catch (error) {
-            list.innerHTML = "<li>Error syncing logs</li>";
-        }
+    const savedToken = sessionStorage.getItem(tokenKey);
+    if (savedToken) {
+        apiRequest("/auth/me")
+            .then(showProfile)
+            .catch(() => sessionStorage.removeItem(tokenKey));
     }
 
     // સેન્ડબોક્સમાં કોડ રન કરવાનું ફંક્શન
@@ -140,16 +236,14 @@
         const outputConsole = document.getElementById('outputConsole');
         const statusLabel = document.getElementById('statusLabel');
 
-        outputConsole.innerText = "Running inside isolated sandbox...";
+        outputConsole.innerText = "Running code...";
         resultContainer.style.display = "block";
 
         try {
-            const response = await fetch(`${API_BASE}/execution/run`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ code: codeText, language: 'python' })
+            const data = await apiRequest("/execution/run", {
+                method: "POST",
+                body: JSON.stringify({ code: codeText, language: "python" })
             });
-            const data = await response.json();
             if (data.success) {
                 statusLabel.innerText = "Success:"; statusLabel.style.color = "#10b981";
                 resultContainer.style.borderLeft = "5px solid #10b981";
@@ -160,7 +254,7 @@
                 outputConsole.innerText = data.stderr;
             }
         } catch (error) {
-            outputConsole.innerText = "Execution failed. Server offline.";
+            outputConsole.innerText = error.message;
         }
     }
 </script>

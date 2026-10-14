@@ -4,29 +4,47 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api.assistant import AssistantRequest, request_tutor_hint
-from app.api.auth import LoginRequest, login_or_register_user
+from app.api.auth import (
+    Credentials,
+    ProfileUpdate,
+    RegistrationRequest,
+    delete_profile,
+    get_current_student,
+    get_profile,
+    hash_password,
+    login_or_register_user,
+    register,
+    update_profile,
+    verify_password,
+)
 from app.api.execution import ExecutionRequest, run_code
 from app.api.recommendation import get_recommended_problem
-from app.db.database import Base
+from app.db.database import Base, get_db
 from app.main import DEFAULT_PROBLEMS, app, health_check, lifespan
-from app.models.schemas import CodingProblem, LoginHistory, StudentProfile, UserSession
+from app.models.schemas import AuthToken, CodingProblem, LoginHistory, StudentProfile, UserSession
 from app.sandbox.executor import execute_python_code
 
 
 class RequestValidationTests(unittest.TestCase):
     def test_username_is_trimmed_and_case_normalized(self):
-        self.assertEqual(LoginRequest(username="  Alex_Dev  ").username, "alex_dev")
+        request = Credentials(username="  Alex_Dev  ", password="correct horse")
+        self.assertEqual(request.username, "alex_dev")
 
     def test_invalid_username_is_rejected(self):
         for username in ("ab", "bad name", "<script>"):
             with self.subTest(username=username), self.assertRaises(ValidationError):
-                LoginRequest(username=username)
+                Credentials(username=username, password="correct horse")
+
+    def test_short_password_is_rejected(self):
+        with self.assertRaises(ValidationError):
+            Credentials(username="student", password="short")
 
     def test_execution_request_rejects_unsupported_language(self):
         with self.assertRaises(ValidationError):
@@ -101,7 +119,7 @@ class RecommendationTests(unittest.TestCase):
         db = MagicMock()
         db.query.side_effect = [student_query, problem_query]
 
-        result = get_recommended_problem(5, db)
+        result = get_recommended_problem(5, db, student)
         self.assertEqual(result["title"], "Count Vowels")
         self.assertEqual(result["student_username"], "alex")
 
@@ -112,35 +130,87 @@ class RecommendationTests(unittest.TestCase):
         db.query.return_value = query
 
         with self.assertRaises(HTTPException) as error:
-            get_recommended_problem(99, db)
+            get_recommended_problem(99, db, SimpleNamespace(id=99))
         self.assertEqual(error.exception.status_code, 404)
 
 
 class LoginTests(unittest.TestCase):
-    def test_profile_reuse_records_logins_without_duplicate_sessions(self):
+    def setUp(self):
         test_engine = create_engine(
             "sqlite://",
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
         )
         Base.metadata.create_all(bind=test_engine)
-        test_sessions = sessionmaker(bind=test_engine)
+        self.test_engine = test_engine
+        self.test_sessions = sessionmaker(bind=test_engine)
 
-        with test_sessions() as db:
-            first = login_or_register_user(LoginRequest(username="Student_One"), db)
-            second = login_or_register_user(LoginRequest(username="student_one"), db)
-            self.assertEqual(first["student_id"], second["student_id"])
-            self.assertEqual(first["username"], "student_one")
+    def tearDown(self):
+        self.test_engine.dispose()
+
+    def test_registration_login_and_password_hashing(self):
+        with self.test_sessions() as db:
+            first = register(
+                RegistrationRequest(username="Student_One", display_name="Student One", password="correct horse"),
+                db,
+            )
+            stored_profile = db.query(StudentProfile).first()
+            self.assertNotEqual(stored_profile.password_hash, "correct horse")
+            self.assertTrue(verify_password("correct horse", stored_profile.password_hash))
+            self.assertFalse(verify_password("wrong password", stored_profile.password_hash))
+            second = login_or_register_user(
+                Credentials(username="STUDENT_ONE", password="correct horse"),
+                db,
+            )
+            self.assertEqual(first["profile"]["student_id"], second["profile"]["student_id"])
+            self.assertNotEqual(first["access_token"], second["access_token"])
             self.assertEqual(db.query(LoginHistory).count(), 2)
             self.assertEqual(db.query(UserSession).count(), 1)
+
+    def test_existing_demo_profile_cannot_be_claimed_without_password(self):
+        with self.test_sessions() as db:
             legacy_profile = StudentProfile(username="Legacy_User")
             db.add(legacy_profile)
             db.commit()
-            reused = login_or_register_user(LoginRequest(username="legacy_user"), db)
-            self.assertEqual(reused["student_id"], legacy_profile.id)
-            self.assertEqual(db.query(StudentProfile).count(), 2)
+            with self.assertRaises(HTTPException) as error:
+                register(
+                    RegistrationRequest(username="LEGACY_USER", display_name="Another", password="some password"),
+                    db,
+                )
+            self.assertEqual(error.exception.status_code, 409)
 
-        test_engine.dispose()
+    def test_invalid_login_does_not_create_a_profile(self):
+        with self.test_sessions() as db:
+            with self.assertRaises(HTTPException) as error:
+                login_or_register_user(Credentials(username="new_student", password="correct horse"), db)
+            self.assertEqual(error.exception.status_code, 401)
+            self.assertEqual(db.query(StudentProfile).count(), 0)
+
+    def test_bearer_token_scopes_profile_update_to_its_owner(self):
+        with self.test_sessions() as db:
+            result = register(
+                RegistrationRequest(username="student_one", display_name="Student One", password="correct horse"),
+                db,
+            )
+            student = get_current_student(f"Bearer {result['access_token']}", db)
+            updated = update_profile(ProfileUpdate(display_name="Updated Name"), student, db)
+            self.assertEqual(updated["display_name"], "Updated Name")
+            self.assertEqual(get_profile(student)["username"], "student_one")
+            with self.assertRaises(HTTPException) as error:
+                get_current_student("Bearer invalid-token", db)
+            self.assertEqual(error.exception.status_code, 401)
+
+    def test_profile_deletion_removes_login_history_and_revokes_tokens(self):
+        with self.test_sessions() as db:
+            result = register(
+                RegistrationRequest(username="student_one", display_name="Student One", password="correct horse"),
+                db,
+            )
+            student = get_current_student(f"Bearer {result['access_token']}", db)
+            delete_profile(student, db)
+            self.assertEqual(db.query(StudentProfile).count(), 0)
+            self.assertEqual(db.query(LoginHistory).count(), 0)
+            self.assertEqual(db.query(AuthToken).count(), 0)
 
 
 class StartupTests(unittest.TestCase):
@@ -166,16 +236,125 @@ class StartupTests(unittest.TestCase):
                 self.assertEqual(db.query(CodingProblem).count(), len(DEFAULT_PROBLEMS))
         test_engine.dispose()
 
+    def test_existing_profile_table_is_upgraded_without_losing_rows(self):
+        test_engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        with test_engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE student_profiles (id INTEGER PRIMARY KEY, username VARCHAR(30) NOT NULL UNIQUE, "
+                "skill_rating FLOAT NOT NULL DEFAULT 100, created_at DATETIME NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO student_profiles (username, skill_rating, created_at) "
+                "VALUES ('existing_student', 100, CURRENT_TIMESTAMP)"
+            )
+        test_sessions = sessionmaker(bind=test_engine)
+
+        async def start_app():
+            async with lifespan(app):
+                pass
+
+        with patch("app.main.engine", test_engine), patch("app.main.SessionLocal", test_sessions):
+            asyncio.run(start_app())
+        with test_sessions() as db:
+            profile = db.query(StudentProfile).filter_by(username="existing_student").one()
+            self.assertEqual(profile.display_name, None)
+            self.assertEqual(profile.password_hash, None)
+        test_engine.dispose()
+
 
 class RouteTests(unittest.TestCase):
     def test_public_api_routes_are_registered(self):
         paths = app.openapi()["paths"]
         self.assertIn("/auth/login", paths)
+        self.assertIn("/auth/register", paths)
+        self.assertIn("/auth/me", paths)
+        self.assertIn("/auth/me/login-history", paths)
+        self.assertIn("/auth/logout", paths)
         self.assertIn("/execution/run", paths)
         self.assertIn("/recommendation/next-problem/{student_id}", paths)
         self.assertIn("/assistant/get-hint", paths)
         self.assertIn("/health", paths)
         self.assertNotIn("/auth/recent-logins", paths)
+
+    def test_profile_lifecycle_through_http_api(self):
+        test_engine = create_engine(
+            "sqlite://",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
+        test_sessions = sessionmaker(bind=test_engine)
+
+        def override_get_db():
+            with test_sessions() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = override_get_db
+        try:
+            with patch("app.main.engine", test_engine), patch("app.main.SessionLocal", test_sessions):
+                with TestClient(app) as client:
+                    created = client.post(
+                        "/auth/register",
+                        json={
+                            "username": "student_one",
+                            "display_name": "Student One",
+                            "password": "correct horse",
+                        },
+                    )
+                    self.assertEqual(created.status_code, 201)
+                    token = created.json()["access_token"]
+                    headers = {"Authorization": f"Bearer {token}"}
+                    self.assertEqual(client.get("/auth/me", headers=headers).status_code, 200)
+                    self.assertEqual(client.get("/auth/me/login-history", headers=headers).status_code, 200)
+
+                    updated = client.patch(
+                        "/auth/me",
+                        headers=headers,
+                        json={"display_name": "Updated Name"},
+                    )
+                    self.assertEqual(updated.status_code, 200)
+                    self.assertEqual(updated.json()["display_name"], "Updated Name")
+                    self.assertEqual(
+                        client.get(
+                            f"/recommendation/next-problem/{created.json()['profile']['student_id']}",
+                            headers=headers,
+                        ).status_code,
+                        200,
+                    )
+                    another_profile = client.post(
+                        "/auth/register",
+                        json={
+                            "username": "student_two",
+                            "display_name": "Student Two",
+                            "password": "correct horse",
+                        },
+                    )
+                    self.assertEqual(another_profile.status_code, 201)
+                    self.assertEqual(
+                        client.get(
+                            f"/recommendation/next-problem/{another_profile.json()['profile']['student_id']}",
+                            headers=headers,
+                        ).status_code,
+                        403,
+                    )
+
+                    self.assertEqual(client.post("/auth/logout", headers=headers).status_code, 204)
+                    self.assertEqual(client.get("/auth/me", headers=headers).status_code, 401)
+
+                    signed_in = client.post(
+                        "/auth/login",
+                        json={"username": "student_one", "password": "correct horse"},
+                    )
+                    self.assertEqual(signed_in.status_code, 200)
+                    delete_headers = {"Authorization": f"Bearer {signed_in.json()['access_token']}"}
+                    self.assertEqual(client.delete("/auth/me", headers=delete_headers).status_code, 204)
+                    self.assertEqual(client.get("/auth/me", headers=delete_headers).status_code, 401)
+        finally:
+            app.dependency_overrides.pop(get_db, None)
+            test_engine.dispose()
 
 
 if __name__ == "__main__":

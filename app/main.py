@@ -4,7 +4,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from sqlalchemy import text
+from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.api import assistant, auth, execution, recommendation
@@ -56,6 +56,12 @@ DEFAULT_PROBLEMS = (
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    profile_columns = {column["name"] for column in inspect(engine).get_columns("student_profiles")}
+    with engine.begin() as connection:
+        if "display_name" not in profile_columns:
+            connection.execute(text("ALTER TABLE student_profiles ADD COLUMN display_name VARCHAR(80)"))
+        if "password_hash" not in profile_columns:
+            connection.execute(text("ALTER TABLE student_profiles ADD COLUMN password_hash VARCHAR(256)"))
     with SessionLocal() as db:
         existing_titles = {
             title for (title,) in db.query(CodingProblem.title).all()
@@ -78,7 +84,7 @@ app.add_middleware(
     allow_origins=get_cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(auth.router)
